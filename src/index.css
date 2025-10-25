@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  @apply bg-neutral-50 text-neutral-900 font-sans antialiased;
+}
+
+body {
+  @apply leading-tight;
+}
+
+::selection {
+  @apply bg-neutral-900 text-white;
+}
+
+input, textarea, button {
+  @apply outline-none focus:ring-1 focus:ring-neutral-800 transition;
+}
