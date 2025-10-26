@@ -1,9 +1,31 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import TodoList from "./components/TodoList";
-import WOList from "./components/WOList";
+import WOList from "./components/WOlist";
 
 export default function App() {
   const [tab, setTab] = useState<"todos" | "wo">("todos");
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isField =
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        (target as any)?.isContentEditable;
+      if (isField || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "w" || e.key === "W") {
+        e.preventDefault();
+        setTab("todos");
+      } else if (e.key === "t" || e.key === "T") {
+        e.preventDefault();
+        setTab("wo");
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -24,7 +46,7 @@ export default function App() {
           <span
             className={[
               "pointer-events-none absolute inset-y-1 w-[calc(50%-8px)]",
-              "rounded-md bg-neutral-300 shadow-sm",
+              "rounded-md bg-neutral-200/80 shadow-sm",
               "transition-all duration-200 ease-out",
               tab === "todos" ? "left-1" : "left-[calc(50%+4px)]",
             ].join(" ")}
@@ -37,6 +59,7 @@ export default function App() {
               "relative z-10 px-3 py-1.5 text-[11px] font-medium",
               "transition-colors",
               tab === "todos" ? "text-neutral-900" : "text-neutral-600 hover:text-neutral-800",
+              "focus:outline-none focus-visible:outline-none focus:ring-0"
             ].join(" ")}
           >
             Todos
@@ -49,6 +72,7 @@ export default function App() {
               "relative z-10 px-3 py-1.5 text-[11px] font-medium",
               "transition-colors",
               tab === "wo" ? "text-neutral-900" : "text-neutral-600 hover:text-neutral-800",
+              "focus:outline-none focus-visible:outline-none focus:ring-0"
             ].join(" ")}
           >
             WO Tracker
