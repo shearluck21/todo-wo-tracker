@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import TodoList from "./components/TodoList";
-import WOList from "./components/WOList";
+import WOList from "./components/WOlist";
 
 export default function App() {
   const [tab, setTab] = useState<"todos" | "wo">("todos");
