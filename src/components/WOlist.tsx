@@ -113,7 +113,7 @@ export default function WOList() {
 
   // focused card selection (for arrow-key nav)
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const didInitFocus = useState(false)[0]; // placeholder to keep minimal changes
+  // const didInitFocus = useState(false)[0]; // placeholder to keep minimal changes
   const itemsRef = useRef(items);
   const focusedIdRef = useRef<string | null>(null);
   useEffect(() => { itemsRef.current = items; }, [items]);
@@ -247,7 +247,7 @@ export default function WOList() {
         ) : (
           <ul className="space-y-3">
             {items.map(w => {
-              const dueWarn = isDueWithin5to9Weeks(w.due_on);
+              // const dueWarn = isDueWithin5to9Weeks(w.due_on);
               return (
                 <li key={w.id}>
                   <TodoCard
