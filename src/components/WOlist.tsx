@@ -488,6 +488,7 @@ function InlineSelect({
   onEscapeFocusRow,
   nextFocusQuery,
   prevFocusQuery,
+  onFocus,
 }: {
   value: string; // current option key/value
   options: { key: string; label: string; className?: string }[] | string[];
@@ -497,6 +498,7 @@ function InlineSelect({
   onEscapeFocusRow?: () => void;
   nextFocusQuery?: string;
   prevFocusQuery?: string;
+  onFocus?: () => void;
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -558,6 +560,7 @@ function InlineSelect({
         type="button"
         className={buttonClass}
         onFocus={() => {
+          onFocus?.();
           if (skipOpenRef.current) {
             skipOpenRef.current = false;
             return;
