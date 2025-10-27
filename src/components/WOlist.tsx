@@ -63,10 +63,6 @@ function daysBetweenUTC(iso?: string, from = new Date()) {
   const bUTC = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
   return Math.round((aUTC - bUTC) / (1000 * 60 * 60 * 24));
 }
-function _isDueWithin5to9Weeks(iso?: string) {
-  const dd = daysBetweenUTC(iso);
-  return dd >= 35 && dd <= 63; // 5–9 weeks inclusive
-}
 
 // Flexible date normalizer and validator
 function toISOIfPossible(input: string): { iso?: string; valid: boolean } {
