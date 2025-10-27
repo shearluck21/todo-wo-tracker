@@ -642,7 +642,7 @@ export default function TodoList() {
   );
 }
 // Auto-resize helper for notes textarea
-function useAutosizeTextArea(ref: React.RefObject<HTMLTextAreaElement>, value: string) {
+function useAutosizeTextArea(ref: React.RefObject<HTMLTextAreaElement | null>, value: string) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;

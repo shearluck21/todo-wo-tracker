@@ -1,7 +1,9 @@
-import { forwardRef, InputHTMLAttributes } from "react";
+import { forwardRef } from "react";
+import type { InputHTMLAttributes } from "react";
 
 type Props = InputHTMLAttributes<HTMLInputElement> & {
-  sizeClass?: string; // optional fixed width like "basis-56 shrink-0"
+  /** optional fixed width like "basis-56 shrink-0" */
+  sizeClass?: string;
 };
 
 const Input = forwardRef<HTMLInputElement, Props>(function Input(
@@ -11,11 +13,7 @@ const Input = forwardRef<HTMLInputElement, Props>(function Input(
   return (
     <input
       ref={ref}
-      className={
-        "h-11 rounded-xl border border-neutral-300 bg-white px-3 text-sm outline-none " +
-        "focus:ring-2 focus:ring-neutral-900/10 " +
-        sizeClass + " " + className
-      }
+      className={`h-11 rounded-2xl px-4 outline-none ${sizeClass ?? ""} ${className ?? ""}`}
       {...props}
     />
   );
