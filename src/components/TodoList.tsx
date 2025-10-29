@@ -22,9 +22,13 @@ type Task = {
   text: string;
   done: boolean;
   priority: Priority;
-  dueLabel: string;   // "Today" | "Tomorrow" | "Next Monday" | "Wed" etc.
-  notes: string; // multiline allowed
-  expanded: boolean; // show details on add
+  // Stable due fields
+  dueKey?: string | null;   // "today" | "tomorrow" | "next-mon" | "wd-YYYY-MM-DD"
+  dueISO?: string | null;   // local "YYYY-MM-DD"
+  // Legacy (for migration)
+  dueLabel?: string;
+  notes: string;
+  expanded: boolean;
 };
 
 // === Due date helpers ===
@@ -33,36 +37,54 @@ function startOfDay(d: Date) {
   x.setHours(0, 0, 0, 0);
   return x;
 }
-
 function addDays(d: Date, n: number) {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
   return x;
 }
-
 function toISODate(d: Date) {
-  return startOfDay(d).toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
-
 function fmtMDY(d: Date) {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   const yy = String(d.getFullYear()).slice(-2);
   return `${mm}/${dd}/${yy}`;
 }
-
 function weekdayName(d: Date) {
-  return d.toLocaleDateString(undefined, { weekday: "long" }); // e.g., "Tuesday"
+  return d.toLocaleDateString(undefined, { weekday: "long" });
 }
-
+function nextMondayFrom(d: Date) {
+  const dow = d.getDay();
+  const daysUntilMon = (1 + 7 - dow) % 7 || 1;
+  return addDays(d, daysUntilMon);
+}
+function computeGroupLabelForISO(iso: string | null | undefined, now = new Date()) {
+  if (!iso) return "No Date";
+  const today = startOfDay(now);
+  const todayISO = toISODate(today);
+  const tomorrowISO = toISODate(addDays(today, 1));
+  if (iso === todayISO) return "Today";
+  if (iso === tomorrowISO) return "Tomorrow";
+  const nmISO = toISODate(nextMondayFrom(today));
+  if (iso === nmISO) return "Next Monday";
+  const dt = new Date(iso + "T00:00:00");
+  return weekdayName(dt);
+}
+function deriveDueFromKey(key: string, now = new Date()) {
+  const today = startOfDay(now);
+  if (key === "today") return { key, iso: toISODate(today) };
+  if (key === "tomorrow") return { key, iso: toISODate(addDays(today, 1)) };
+  if (key === "next-mon") return { key, iso: toISODate(nextMondayFrom(today)) };
+  if (key.startsWith("wd-")) return { key, iso: key.slice(3) };
+  return { key: "today", iso: toISODate(today) };
+}
 /**
- * Build a list of due options:
- * - Always includes Today.
- * - Includes Tomorrow only if it is Mon–Thu; on Fri we skip weekend.
- * - Then includes each next weekday up to Friday.
- * - On Fri/Sat/Sun, only "Next Monday" (plus Today on Fri if needed elsewhere).
- *
- * Returns array of { key, label, iso } where key is a stable string.
+ * Build a list of due options (labels always include a date suffix):
+ * Today; (Mon–Thu) Tomorrow + subsequent weekdays to Fri; (Fri–Sun) Next Monday
  */
 function buildDueOptions(now = new Date()) {
   const today = startOfDay(now);
@@ -72,83 +94,85 @@ function buildDueOptions(now = new Date()) {
   // Always include Today
   options.push({ key: "today", label: `Today (${fmtMDY(today)})`, iso: toISODate(today) });
 
-  // If Fri/Sat/Sun => only Next Monday (skip Tomorrow/weekend)
+  // If Fri/Sat/Sun => only Next Monday (skip weekend)
   if (dow === 5 || dow === 6 || dow === 0) {
-    const daysUntilMon = (1 + 7 - dow) % 7 || 1;
-    const nextMon = addDays(today, daysUntilMon);
+    const nextMon = nextMondayFrom(today);
     options.push({ key: "next-mon", label: `Next Monday (${fmtMDY(nextMon)})`, iso: toISODate(nextMon) });
     return options;
   }
 
   // Mon..Thu
-  // Tomorrow
   const tomorrow = addDays(today, 1);
   options.push({ key: "tomorrow", label: `Tomorrow (${fmtMDY(tomorrow)})`, iso: toISODate(tomorrow) });
 
-  // Subsequent weekdays up to Friday
   let cursor = addDays(today, 2);
-  while (cursor.getDay() <= 5) { // <= Fri (5)
+  while (cursor.getDay() <= 5) { // up to Fri
     options.push({
       key: `wd-${toISODate(cursor)}`,
-      label: `${weekdayName(cursor)} (${fmtMDY(cursor)})`, // e.g., "Wednesday (10/23/25)"
+      label: `${weekdayName(cursor)} (${fmtMDY(cursor)})`,
       iso: toISODate(cursor),
     });
     cursor = addDays(cursor, 1);
   }
 
-  // After Friday, also include Next Monday for convenience
-  const daysUntilMon = (1 + 7 - dow) % 7 || 1;
-  const nextMon = addDays(today, daysUntilMon);
+  const nextMon = nextMondayFrom(today);
   options.push({ key: "next-mon", label: `Next Monday (${fmtMDY(nextMon)})`, iso: toISODate(nextMon) });
-
   return options;
 }
 
-/**
- * Compute the next due label (and iso date if needed later).
- * - "today"      -> Today
- * - "tomorrow"   -> Tomorrow
- * - "next"       -> next workday; on Fri/Sat/Sun -> Next Monday
- */
-function computeDue(choice: "today" | "tomorrow" | "next", now = new Date()) {
-  const today = startOfDay(now);
-  const dow = today.getDay(); // 0 Sun ... 6 Sat
-
-  if (choice === "today") {
-    return { label: "Today", iso: toISODate(today) };
-  }
-  if (choice === "tomorrow") {
-    const tmr = addDays(today, 1);
-    return { label: "Tomorrow", iso: toISODate(tmr) };
-  }
-
-  // choice === "next"
-  if (dow === 5 || dow === 6 || dow === 0) {
-    // Fri/Sat/Sun -> Next Monday
-    const daysUntilMon = (1 + 7 - dow) % 7 || 1;
-    const nextMon = addDays(today, daysUntilMon);
-    return { label: "Next Monday", iso: toISODate(nextMon) };
-  }
-  // Mon..Thu -> next calendar day (weekday)
-  const nextDay = addDays(today, 1);
-  return { label: weekdayName(nextDay), iso: toISODate(nextDay) };
-}
-
 export default function TodoList() {
-  const [tasks, setTasks] = useState<Task[]>(() => load<Task[]>("tasks", []));
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    const raw = load<any[]>("tasks", []) || [];
+    const today = startOfDay(new Date());
+    const migrated: Task[] = raw.map((t: any) => {
+      const nt: Task = { ...t };
+      if (nt.dueKey || nt.dueISO) return nt;
+      // Try to parse from legacy dueLabel "(MM/DD/YY)"
+      let iso: string | null = null;
+      const base = typeof nt.dueLabel === "string" ? nt.dueLabel.replace(/\s*\(.*\)$/, "") : null;
+      const m = typeof nt.dueLabel === "string" ? nt.dueLabel.match(/(\d{2})\/(\d{2})\/(\d{2})/) : null;
+      if (m) {
+        const mm = parseInt(m[1], 10);
+        const dd = parseInt(m[2], 10);
+        const yy = parseInt(m[3], 10);
+        const fullYear = 2000 + yy;
+        iso = `${fullYear}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+      } else if (base === "Today") {
+        iso = toISODate(today);
+      } else if (base === "Tomorrow") {
+        iso = toISODate(addDays(today, 1));
+      } else if (base === "Next Monday") {
+        iso = toISODate(nextMondayFrom(today));
+      } else {
+        iso = null;
+      }
+      nt.dueISO = iso;
+      if (iso) {
+        if (iso === toISODate(today)) nt.dueKey = "today";
+        else if (iso === toISODate(addDays(today, 1))) nt.dueKey = "tomorrow";
+        else if (iso === toISODate(nextMondayFrom(today))) nt.dueKey = "next-mon";
+        else nt.dueKey = `wd-${iso}`;
+      } else {
+        nt.dueKey = null;
+      }
+      return nt;
+    });
+    return migrated;
+  });
+
   const [text, setText] = useState("");
   const [priority, setPriority] = useState<Priority>("medium");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const dueOptions = buildDueOptions();
-  const [dueChoice, setDueChoice] = useState<string>(dueOptions[0].key); // default to first option (Today)
+  const [dueChoice, setDueChoice] = useState<string>(dueOptions[0].key);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const didInitFocus = useRef(false);
 
-  // live refs so the single global key handler always sees latest state
+  // live refs for hotkeys
   const tasksRef = useRef(tasks);
   const focusedIdRef = useRef<string | null>(null);
   const editingIdRef = useRef<string | null>(null);
@@ -156,42 +180,17 @@ export default function TodoList() {
   useEffect(() => { focusedIdRef.current = focusedId; }, [focusedId]);
   useEffect(() => { editingIdRef.current = editingId; }, [editingId]);
 
-  // Focus the title of a given task id; enters edit mode by default
-  function focusTitle(id: string, edit = true) {
-    if (edit) setEditingId(id);
-    requestAnimationFrame(() => {
-      const input = document.querySelector<HTMLInputElement>(`[data-title-input="${id}"]`);
-      if (input) { input.focus(); input.select(); return; }
-      const btn = document.querySelector<HTMLButtonElement>(`[data-title-button="${id}"]`);
-      btn?.focus();
-    });
-  }
-
-  // Focus the entire row wrapper (not the input). Used by Arrow Up/Down.
-  function focusRow(id: string) {
-    requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(`[data-row="${id}"]`);
-      row?.focus();
-    });
-  }
-
-  function baseDueLabel(label: string) {
-    return label.replace(/\s*\(.*\)$/, "");
-  }
   function nextPriority(p: Priority): Priority {
     return p === "medium" ? "high" : p === "high" ? "low" : "medium";
   }
-
   function normalize(s: string) {
     return s.replace(/\s+/g, " ").trim();
   }
-
   function validate(label: string) {
     if (!label) return "Task cannot be empty.";
     if (label.length > 200) return "Keep tasks under 200 characters.";
     return null;
   }
-
   function makeTask(label: string, p: Priority, n: string, dueLabel: string): Task {
     return {
       id: crypto.randomUUID(),
@@ -203,17 +202,14 @@ export default function TodoList() {
       expanded: true,
     };
   }
-
   function resetForm() {
     setText("");
     setPriority("medium");
     setNotes("");
     setDueChoice(buildDueOptions()[0].key);
     setError(null);
-    // focus back to the main input for fast entry
     requestAnimationFrame(() => inputRef.current?.focus());
   }
-
   function addTask() {
     const label = normalize(text);
     const err = validate(label);
@@ -221,26 +217,22 @@ export default function TodoList() {
       setError(err);
       return;
     }
-    const selected = buildDueOptions().find(o => o.key === dueChoice) ?? dueOptions[0];
-    const t = makeTask(label, priority, notes, selected.label);
-    setTasks((prev) => [t, ...prev]);
-    resetForm();
   }
 
-  // Add a blank task inline (used by the top header button)
+  // Add a blank task inline
   function addInlineTask(focusAfter = false) {
     const todayOpt = buildDueOptions()[0];
     const t = makeTask("New task", "medium", "", todayOpt.label);
+    // set stable fields
+    t.dueKey = todayOpt.key;
+    t.dueISO = todayOpt.iso;
+
     setTasks((prev) => [t, ...prev]);
-    // immediately put the new row into title-editing mode
     setEditingId(t.id);
 
     if (focusAfter) {
-      // wait until input mounts then focus/select it
       requestAnimationFrame(() => {
-        const el = document.querySelector<HTMLInputElement>(
-          `[data-title-input="${t.id}"]`
-        );
+        const el = document.querySelector<HTMLInputElement>(`[data-title-input="${t.id}"]`);
         el?.focus();
         el?.select();
       });
@@ -252,33 +244,13 @@ export default function TodoList() {
       prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t))
     );
   }
-
   function toggleExpanded(id: string) {
     setTasks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, expanded: !t.expanded } : t))
     );
   }
-
   function remove(id: string) {
     setTasks((prev) => prev.filter((t) => t.id !== id));
-  }
-
-  // Render notes preserving bullets/line breaks
-  function NotesView({ value }: { value: string }) {
-    if (!value.trim()) return null;
-    // If user typed bullets, keep them; otherwise just show paragraphs with line breaks.
-    const lines = value.split(/\r?\n/);
-    const looksLikeList = lines.some((l) => /^\s*([-*]|\d+\.)\s+/.test(l));
-    if (looksLikeList) {
-      return (
-        <ul className="list-disc pl-5 space-y-1 whitespace-pre-wrap">
-          {lines.map((l, i) => (
-            <li key={i}>{l.replace(/^\s*([-*]|\d+\.)\s+/, "")}</li>
-          ))}
-        </ul>
-      );
-    }
-    return <p className="whitespace-pre-wrap">{value}</p>;
   }
 
   // Listen for global add requests from the header button
@@ -288,7 +260,7 @@ export default function TodoList() {
     return () => window.removeEventListener("add-task", handler);
   }, []);
 
-  // Shared hotkey handler for global and local keydown events
+  // Shared hotkey handler
   const handleHotkey = (e: any) => {
     const target = e.target as HTMLElement | null;
     if (isInteractive(target) || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -297,13 +269,13 @@ export default function TodoList() {
     const focusedId = focusedIdRef.current;
     const editingId = editingIdRef.current;
 
-    // helper: ordered id list in the same order as render
+    // ordered ids in the same order as render
     const orderedIds = () => {
       const order = ['Today','Tomorrow','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday','Next Monday','No Date'];
       const known = new Set(order);
       const by: Record<string, Task[]> = {} as any;
       for (const t of tasks) {
-        const k = baseDueLabel(t.dueLabel) || 'No Date';
+        const k = computeGroupLabelForISO(t.dueISO) || 'No Date';
         (by[k] ||= []).push(t);
       }
       const dynamic = Object.keys(by).filter((k) => !known.has(k));
@@ -320,22 +292,14 @@ export default function TodoList() {
       const btns = Array.from(document.querySelectorAll<HTMLButtonElement>('button'));
       btns.find(b => want.test(b.textContent || ''))?.click();
     };
-
     const switchView = (label: 'wo' | 'tasks') => {
-      // 1) Try data-view button immediately
       const btn = document.querySelector<HTMLElement>(`[data-view="${label}"]`);
       if (btn) { btn.click(); return true; }
-
-      // 2) Try common aria-labels / roles
       const aria = label === 'wo' ? /work\s*orders/i : /to-?\s*do|todos?/i;
       const candidates = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"],button,[aria-label]'));
       const hit = candidates.find(el => aria.test(el.getAttribute('aria-label') || el.textContent || ''));
       if (hit) { hit.click(); return true; }
-
-      // 3) Fallback: our previous text scan of all buttons
       clickFallback(label);
-
-      // 4) Last-ditch: set URL hash and fire hashchange (in case App listens)
       try {
         const want = label === 'wo' ? '#view=wo' : '#view=tasks';
         if (location.hash !== want) {
@@ -343,8 +307,6 @@ export default function TodoList() {
           window.dispatchEvent(new HashChangeEvent('hashchange'));
         }
       } catch {}
-
-      // 5) Retry once on next tick in case header mounts late
       setTimeout(() => {
         const b2 = document.querySelector<HTMLElement>(`[data-view="${label}"]`);
         if (b2) b2.click();
@@ -356,9 +318,10 @@ export default function TodoList() {
     if (e.key === 'n' || e.key === 'N') {
       e.preventDefault();
       e.stopPropagation?.();
-      // quick add inline and focus title
       const todayOpt = buildDueOptions()[0];
       const t = makeTask('New task', 'medium', '', todayOpt.label);
+      t.dueKey = todayOpt.key;
+      t.dueISO = todayOpt.iso;
       setTasks((prev) => [t, ...prev]);
       setEditingId(t.id);
       requestAnimationFrame(() => {
@@ -392,10 +355,8 @@ export default function TodoList() {
       const id = focusedId ?? tasks[0]?.id;
       if (!id) return;
       if (e.shiftKey) {
-        // delete
         setTasks((prev) => prev.filter((t) => t.id !== id));
       } else {
-        // toggle done
         setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
         if (!focusedId) setFocusedId(id);
       }
@@ -427,13 +388,13 @@ export default function TodoList() {
     }
   };
 
-  // Register handleHotkey on window and document in both capture and bubble
+  // register hotkeys
   useEffect(() => {
     const h = (e: KeyboardEvent) => handleHotkey(e);
-    window.addEventListener('keydown', h, true);     // capture
-    window.addEventListener('keydown', h, false);    // bubble
-    document.addEventListener('keydown', h, true);   // capture
-    document.addEventListener('keydown', h, false);  // bubble
+    window.addEventListener('keydown', h, true);
+    window.addEventListener('keydown', h, false);
+    document.addEventListener('keydown', h, true);
+    document.addEventListener('keydown', h, false);
     return () => {
       window.removeEventListener('keydown', h, true);
       window.removeEventListener('keydown', h, false);
@@ -446,19 +407,18 @@ export default function TodoList() {
     save("tasks", tasks);
   }, [tasks]);
 
-  // On initial load, force-select the first *rendered* task (topmost in UI order)
+  // On initial load, force-select the first rendered task
   useEffect(() => {
     if (didInitFocus.current) return;
     if (tasks.length === 0) return;
 
-    // Build the same grouping and order used in render
     const order = [
       'Today','Tomorrow','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday','Next Monday','No Date',
     ];
     const known = new Set(order);
     const by: Record<string, Task[]> = {} as any;
     for (const t of tasks) {
-      const k = baseDueLabel(t.dueLabel) || 'No Date';
+      const k = computeGroupLabelForISO(t.dueISO) || 'No Date';
       (by[k] ||= []).push(t);
     }
     const dynamic = Object.keys(by).filter((k) => !known.has(k));
@@ -485,7 +445,7 @@ export default function TodoList() {
       className="mx-auto max-w-[1100px] px-6 sm:px-8"
       onKeyDownCapture={(e) => handleHotkey(e as any)}
     >
-      {/* Local toolbar (mobile-friendly) */}
+      {/* Local toolbar */}
       <div className="mb-3 flex items-center justify-end">
         <GlassButton
           tone="neutral"
@@ -494,110 +454,40 @@ export default function TodoList() {
           + Add Task
         </GlassButton>
       </div>
-      {/* Input form (hidden) */}
-      {false && (
-        <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <div className="flex gap-2">
-            <input id="task-input" ref={inputRef}
-              className="flex-1 h-11 rounded-xl border border-neutral-300 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-neutral-900/10"
-              placeholder="Add a task…"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTask();
-                }
-              }}
-            />
-            {/* Due selector (dynamic up to Friday, then Next Monday) */}
-            <select
-              className="h-11 rounded-xl border border-neutral-300 bg-white px-3 text-sm"
-              value={dueChoice}
-              onChange={(e) => setDueChoice(e.target.value)}
-              aria-label="Due"
-              title="Due"
-            >
-              {buildDueOptions().map((opt) => (
-                <option key={opt.key} value={opt.key}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            {/* Priority selector */}
-            <select
-              className="h-11 rounded-xl border border-neutral-300 bg-white px-3 text-sm"
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
-              aria-label="Priority"
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-            <button
-              className="h-11 rounded-xl px-4 bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
-              onClick={addTask}
-            >
-              Add
-            </button>
-          </div>
-          <textarea
-            className="mt-3 w-full min-h-[88px] rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-900/10"
-            placeholder="Notes (bullets supported: '-', '*', or '1. ...')"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          />
-          {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
-        </div>
-      )}
 
-      {/* Day groups (frosted cards) */}
+      {/* Day groups */}
       {(() => {
         const order = [
-          "Today",
-          "Tomorrow",
-          "Monday",
-          "Tuesday",
-          "Wednesday",
-          "Thursday",
-          "Friday",
-          "Saturday",
-          "Sunday",
-          "Next Monday",
-          "No Date",
+          "Today","Tomorrow","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday","Next Monday","No Date",
         ];
         const known = new Set(order);
 
-        // Group by base label (strip date suffix like " (10/23/25)")
+        // Group by computed label from stable local date
         const by: Record<string, Task[]> = {};
         for (const t of tasks) {
-          const k = baseDueLabel(t.dueLabel) || "No Date";
+          const k = computeGroupLabelForISO(t.dueISO) || "No Date";
           (by[k] ||= []).push(t);
         }
 
-        // Preserve explicit order; include any unknown labels at the end
         const dynamic = Object.keys(by).filter((k) => !known.has(k));
         const labels = [...order, ...dynamic].filter((k) => by[k]?.length);
 
         return labels.map((label) => (
           <DayCard key={label} className="mt-6">
-            {/* Day header */}
             <div className="mb-2 flex items-center gap-3 text-neutral-800">
               <div className="text-xl font-semibold tracking-tight font-sans">{label}</div>
               <div className="ml-auto text-[11px] font-mono text-neutral-400">Oldest at top</div>
             </div>
 
-            {/* List */}
             <ul className="mt-3 space-y-3">
               {by[label].map((t) => (
                 <TodoRow
-                    key={t.id}
-                    t={t}
-                    editingId={editingId}
-                    focusedId={focusedId}
-                    setFocusedId={setFocusedId}
-                    onSetEditingId={setEditingId}
+                  key={t.id}
+                  t={t}
+                  editingId={editingId}
+                  focusedId={focusedId}
+                  setFocusedId={setFocusedId}
+                  onSetEditingId={setEditingId}
                   onToggleDone={() => toggleDone(t.id)}
                   onChangeText={(val) =>
                     setTasks((prev) =>
@@ -617,11 +507,12 @@ export default function TodoList() {
                     )
                   }
                   onChangeDue={(key) => {
-                    const opt =
-                      buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
+                    const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
                     setTasks((prev) =>
                       prev.map((x) =>
-                        x.id === t.id ? { ...x, dueLabel: opt.label } : x
+                        x.id === t.id
+                          ? { ...x, dueLabel: opt.label, dueKey: opt.key, dueISO: opt.iso }
+                          : x
                       )
                     );
                   }}
@@ -641,6 +532,7 @@ export default function TodoList() {
     </div>
   );
 }
+
 // Auto-resize helper for notes textarea
 function useAutosizeTextArea(ref: React.RefObject<HTMLTextAreaElement | null>, value: string) {
   useEffect(() => {
@@ -650,6 +542,7 @@ function useAutosizeTextArea(ref: React.RefObject<HTMLTextAreaElement | null>, v
     el.style.height = `${el.scrollHeight}px`;
   }, [ref, value]);
 }
+
 // Inline popover select that opens on focus and lets you confirm with Enter
 function InlineSelect({
   value,
@@ -725,19 +618,16 @@ function InlineSelect({
         type="button"
         className={buttonClass}
         onFocus={() => {
-          // Guard: if we just closed via Enter/Tab selection, don't auto-open on focus bounce.
           if (skipOpenRef.current) {
             skipOpenRef.current = false;
             return;
           }
-          // open on focus and jump to top
           setOpen(true);
           setHighlight(0);
           updatePos();
         }}
         onMouseDown={(e) => {
-          // Open on mouse down to avoid focus→click toggle race.
-          e.preventDefault(); // keep focus on the button
+          e.preventDefault();
           if (!open) {
             updatePos();
             setHighlight(0);
@@ -766,7 +656,6 @@ function InlineSelect({
             const opt = options[highlight] || options[0];
             onChange(opt.key);
             setOpen(false);
-            // prevent immediate re-open on focus; restore focus to button
             skipOpenRef.current = true;
             requestAnimationFrame(() => btnRef.current?.focus());
           } else if (e.key === "Tab") {
@@ -775,11 +664,10 @@ function InlineSelect({
             const atEndBackward = e.shiftKey && highlight <= 0;
 
             if (atEndForward || atEndBackward) {
-              // Confirm current option and move focus to the next/prev target if provided
               const opt = options[highlight] || options[0];
               onChange(opt.key);
               setOpen(false);
-              skipOpenRef.current = true; // avoid immediate re-open
+              skipOpenRef.current = true;
 
               const selector = atEndForward ? nextFocusQuery : prevFocusQuery;
               if (selector) {
@@ -787,13 +675,9 @@ function InlineSelect({
                   const el = document.querySelector(selector) as HTMLElement | null;
                   el?.focus();
                 });
-                e.preventDefault(); // we managed focus ourselves
-              } else {
-                // No explicit target; allow native tab to proceed
-                // Do not preventDefault in this branch
+                e.preventDefault();
               }
             } else {
-              // Keep tabbing within the menu
               e.preventDefault();
               setHighlight((h) => {
                 const delta = e.shiftKey ? -1 : 1;
@@ -805,11 +689,7 @@ function InlineSelect({
             e.preventDefault();
             setOpen(false);
             skipOpenRef.current = true;
-            // Instead of focusing button, call onEscapeFocusRow if provided
-            if (onEscapeFocusRow) {
-              onEscapeFocusRow();
-            }
-            // (do not focus btnRef)
+            if (onEscapeFocusRow) onEscapeFocusRow();
           }
         }}
         aria-haspopup="listbox"
@@ -854,6 +734,7 @@ function InlineSelect({
     </div>
   );
 }
+
 // --- TodoRow component ---
 type TodoRowProps = {
   t: Task;
@@ -890,9 +771,7 @@ function TodoRow({
   onChangeNotes,
   onRemove,
   onSetPriority,
-  
 }: TodoRowProps) {
-  // Build due options once per render for this row
   const dueOpts = buildDueOptions();
   return (
     <TodoCard
@@ -900,10 +779,7 @@ function TodoRow({
       tabIndex={0}
       onFocus={() => setFocusedId(t.id)}
       onKeyDown={(e) => {
-        // Only handle when the row wrapper itself has focus (not inner inputs)
         if (e.currentTarget !== e.target) return;
-
-        // Enter/Space: begin editing title
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSetEditingId(t.id);
@@ -914,8 +790,6 @@ function TodoRow({
           });
           return;
         }
-
-        // Tab from a focused row: jump into the title first (so title is always the first stop)
         if (e.key === "Tab") {
           e.preventDefault();
           onSetEditingId(t.id);
@@ -942,7 +816,6 @@ function TodoRow({
               t.done ? "bg-neutral-900 border-neutral-900" : "border-neutral-300 hover:border-neutral-400"
             }`}
           />
-
           <div className="flex-1">
             {editingId === t.id ? (
               <input
@@ -959,7 +832,6 @@ function TodoRow({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === "Escape") {
                     onSetEditingId(null);
-                    // After closing edit mode, focus row in next frame
                     requestAnimationFrame(() => {
                       const row = document.querySelector<HTMLElement>(`[data-row="${t.id}"]`);
                       row?.focus();
@@ -1026,7 +898,7 @@ function TodoRow({
 
           <div className="relative inline-flex items-center">
             <InlineSelect
-              value={(dueOpts.find((o) => o.label === t.dueLabel)?.key || dueOpts[0].key)}
+              value={t.dueKey ?? (dueOpts.find((o) => o.label === (t as any).dueLabel)?.key || dueOpts[0].key)}
               onChange={(key) => onChangeDue(key)}
               options={dueOpts.map((o) => ({ key: o.key, label: o.label }))}
               buttonClass={[
