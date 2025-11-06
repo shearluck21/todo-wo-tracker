@@ -465,7 +465,7 @@ function TodoRow({
         </div>
 
         {/* Row 2: Priority dropdown + Due dropdown + actions */}
-        <div className="pl-7 flex flex-wrap items-center gap-2 text-[11px]">
+        <div className="pl-7 flex items-center gap-2 text-[11px]">
           {/* Priority dropdown */}
           <select
             value={t.priority}
@@ -486,11 +486,10 @@ function TodoRow({
 
           {/* Due dropdown (compact, always visible) */}
           <select
-            value={currentDueKey ?? "today"}
+            value={currentDueKey}
             onChange={(e) => onChangeDue(e.target.value)}
-            className="rounded-md border px-2 py-1 font-mono border-blue-200 bg-blue-50/70 text-blue-800 min-w-[220px] max-w-full"
+            className="rounded-md border px-2 py-1 font-mono border-blue-200 bg-blue-50/70 text-blue-800"
             aria-label="Due date"
-            title="Set due date"
           >
             {dueOpts.map((o) => (
               <option key={o.key} value={o.key}>
