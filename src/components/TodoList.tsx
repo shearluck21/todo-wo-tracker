@@ -1036,24 +1036,7 @@ function TodoRow({
           <div className="relative inline-flex items-center">
             <InlineSelect
               value={t.pendingDueKey ?? t.dueKey ?? computeKeyForISO(t.dueISO)}
-              onChange={(key) => {
-                const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
-                // Stage the new due (do not change grouping yet)
-                setTasks((prev) =>
-                  prev.map((x) =>
-                    x.id === t.id
-                      ? {
-                          ...x,
-                          dueLabel: opt.label,        // update pill text immediately
-                          pendingDueKey: opt.key,     // stage
-                          pendingDueISO: opt.iso,     // stage
-                        }
-                      : x
-                  )
-                );
-                // Keep it pinned until user finishes (Notes blur / row blur)
-                setPinnedNewId(t.id);
-              }}
+              onChange={(key) => onChangeDue(key)}
               options={dueOpts.map((o) => ({ key: o.key, label: o.label }))}
               buttonClass={[
                 "rounded-md border pr-6 pl-3 py-1.5 text-[11px] font-mono leading-none",
