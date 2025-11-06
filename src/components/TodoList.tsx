@@ -538,6 +538,35 @@ export default function TodoList() {
     return () => document.removeEventListener("todo:unpin-if", onUnpin as EventListener);
   }, [pinnedNewId, setTasks]);
 
+  // ---- Row handler closures (avoid inline to keep TS scope clean) ----
+  const setTextFor = (id: string) => (val: string) =>
+    setTasks((prev: Task[]) => prev.map((x: Task) => (x.id === id ? { ...x, text: val } : x)));
+
+  const setPriorityFor = (id: string) => (p: Priority) => {
+    setTasks((prev: Task[]) => prev.map((x: Task) => (x.id === id ? { ...x, priority: p } : x)));
+    setPinnedNewId(id); // defer resorting until notes blur/unpin
+  };
+
+  const setDueFor = (id: string) => (key: string) => {
+    const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
+    setTasks((prev: Task[]) =>
+      prev.map((x: Task) =>
+        x.id === id
+          ? {
+              ...x,
+              dueLabel: opt.label,    // update pill text immediately
+              pendingDueKey: opt.key, // stage only
+              pendingDueISO: opt.iso, // stage only
+            }
+          : x
+      )
+    );
+    setPinnedNewId(id); // keep pinned until notes blur/unpin commits
+  };
+
+  const setNotesFor = (id: string) => (val: string) =>
+    setTasks((prev: Task[]) => prev.map((x: Task) => (x.id === id ? { ...x, notes: val } : x)));
+
   return (
     <div
       data-todo-root
@@ -615,11 +644,7 @@ export default function TodoList() {
                     setFocusedId={setFocusedId}
                     onSetEditingId={setEditingId}
                     onToggleDone={() => toggleDone(t.id)}
-                    onChangeText={(val) =>
-                      setTasks((prev: Task[]) =>
-                        prev.map((x: Task) => (x.id === t.id ? { ...x, text: val } : x))
-                      )
-                    }
+                    onChangeText={setTextFor(t.id)}
                     onCyclePriority={() =>
                       setTasks((prev: Task[]) =>
                         prev.map((x: Task) =>
@@ -627,36 +652,9 @@ export default function TodoList() {
                         )
                       )
                     }
-                    onSetPriority={(p) => {
-                      setTasks((prev: Task[]) =>
-                        prev.map((x: Task) => (x.id === t.id ? { ...x, priority: p } : x))
-                      );
-                      // Defer resorting until user finishes with this row (Notes blur or row blur)
-                      setPinnedNewId(t.id);
-                    }}
-                    onChangeDue={(key) => {
-                      const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
-                      // Stage the new due (do not change grouping yet)
-                      setTasks((prev: Task[]) =>
-                        prev.map((x: Task) =>
-                          x.id === t.id
-                            ? {
-                                ...x,
-                                dueLabel: opt.label,    // update pill text immediately
-                                pendingDueKey: opt.key, // stage only
-                                pendingDueISO: opt.iso, // stage only
-                              }
-                            : x
-                        )
-                      );
-                      // Keep it pinned until user finishes (Notes blur triggers commit)
-                      setPinnedNewId(t.id);
-                    }}
-                    onChangeNotes={(val) =>
-                      setTasks((prev: Task[]) =>
-                        prev.map((x: Task) => (x.id === t.id ? { ...x, notes: val } : x))
-                      )
-                    }
+                    onSetPriority={setPriorityFor(t.id)}
+                    onChangeDue={setDueFor(t.id)}
+                    onChangeNotes={setNotesFor(t.id)}
                     onToggleExpanded={() => toggleExpanded(t.id)}
                     onRemove={() => remove(t.id)}
                   />
@@ -1029,7 +1027,7 @@ function TodoRow({
                   row?.focus();
                 });
               }}
-              nextFocusQuery={`.data-due-btn-${t.id}`}
+              nextFocusQuery={`[data-due-btn="${t.id}"]`}
             />
           </div>
 
