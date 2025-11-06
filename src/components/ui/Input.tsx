@@ -1,4 +1,4 @@
-import React, { forwardRef } from "react";
+import { forwardRef } from "react";
 
 // `InputHTMLAttributes` is only used as a type, so we import it with `type`.
 import type { InputHTMLAttributes } from "react";
