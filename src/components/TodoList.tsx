@@ -205,8 +205,8 @@ export default function TodoList() {
   // Delete tasks that were completed on or before yesterday (i.e., any done task with a due date before today)
   function cleanupDoneBeforeToday() {
     const todayIso = toISODate(startOfDay(new Date()));
-    setTasks((prev) =>
-      prev.filter((t) => {
+    setTasks((prev: Task[]) =>
+      prev.filter((t: Task) => {
         if (!t.done) return true;
         if (!t.dueISO) return true; // don't auto-delete undated items
         return t.dueISO >= todayIso; // keep today/future; drop past
@@ -273,7 +273,7 @@ export default function TodoList() {
     t.pendingDueISO = null;
     setPinnedNewId(t.id);
 
-    setTasks((prev) => [t, ...prev]);
+    setTasks((prev: Task[]) => [t, ...prev]);
     setEditingId(t.id);
 
     if (focusAfter) {
@@ -286,17 +286,17 @@ export default function TodoList() {
   }
 
   function toggleDone(id: string) {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t))
+    setTasks((prev: Task[]) =>
+      prev.map((t: Task) => (t.id === id ? { ...t, done: !t.done } : t))
     );
   }
   function toggleExpanded(id: string) {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, expanded: !t.expanded } : t))
+    setTasks((prev: Task[]) =>
+      prev.map((t: Task) => (t.id === id ? { ...t, expanded: !t.expanded } : t))
     );
   }
   function remove(id: string) {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
+    setTasks((prev: Task[]) => prev.filter((t: Task) => t.id !== id));
   }
 
   // Listen for global add requests from the header button
@@ -371,7 +371,7 @@ export default function TodoList() {
       t.pendingDueKey = null;
       t.pendingDueISO = null;
       setPinnedNewId(t.id);
-      setTasks((prev) => [t, ...prev]);
+      setTasks((prev: Task[]) => [t, ...prev]);
       setEditingId(t.id);
       requestAnimationFrame(() => {
         const el = document.querySelector<HTMLInputElement>(`[data-title-input="${t.id}"]`);
@@ -404,9 +404,9 @@ export default function TodoList() {
       const id = focusedId ?? tasks[0]?.id;
       if (!id) return;
       if (e.shiftKey) {
-        setTasks((prev) => prev.filter((t) => t.id !== id));
+        setTasks((prev: Task[]) => prev.filter((t: Task) => t.id !== id));
       } else {
-        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+        setTasks((prev: Task[]) => prev.map((t: Task) => (t.id === id ? { ...t, done: !t.done } : t)));
         if (!focusedId) setFocusedId(id);
       }
       return;
@@ -515,9 +515,9 @@ export default function TodoList() {
       const id = (e as CustomEvent<string>).detail;
       if (pinnedNewId !== id) return;
       // If there is a staged due change, commit it now
-      setTasks((prev) => {
+      setTasks((prev: Task[]) => {
         const opts = buildDueOptions();
-        return prev.map((x) => {
+        return prev.map((x: Task) => {
           if (x.id !== id) return x;
           const isoToUse = x.pendingDueISO ?? x.dueISO ?? null;
           const keyToUse = computeKeyForISO(isoToUse);
@@ -616,20 +616,20 @@ export default function TodoList() {
                     onSetEditingId={setEditingId}
                     onToggleDone={() => toggleDone(t.id)}
                     onChangeText={(val) =>
-                      setTasks((prev) =>
-                        prev.map((x) => (x.id === t.id ? { ...x, text: val } : x))
+                      setTasks((prev: Task[]) =>
+                        prev.map((x: Task) => (x.id === t.id ? { ...x, text: val } : x))
                       )
                     }
                     onCyclePriority={() =>
-                      setTasks((prev) =>
-                        prev.map((x) =>
+                      setTasks((prev: Task[]) =>
+                        prev.map((x: Task) =>
                           x.id === t.id ? { ...x, priority: nextPriority(x.priority) } : x
                         )
                       )
                     }
                     onSetPriority={(p) => {
-                      setTasks((prev) =>
-                        prev.map((x) => (x.id === t.id ? { ...x, priority: p } : x))
+                      setTasks((prev: Task[]) =>
+                        prev.map((x: Task) => (x.id === t.id ? { ...x, priority: p } : x))
                       );
                       // Defer resorting until user finishes with this row (Notes blur or row blur)
                       setPinnedNewId(t.id);
@@ -637,8 +637,8 @@ export default function TodoList() {
                     onChangeDue={(key) => {
                       const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
                       // Stage the new due (do not change grouping yet)
-                      setTasks((prev) =>
-                        prev.map((x) =>
+                      setTasks((prev: Task[]) =>
+                        prev.map((x: Task) =>
                           x.id === t.id
                             ? {
                                 ...x,
@@ -653,8 +653,8 @@ export default function TodoList() {
                       setPinnedNewId(t.id);
                     }}
                     onChangeNotes={(val) =>
-                      setTasks((prev) =>
-                        prev.map((x) => (x.id === t.id ? { ...x, notes: val } : x))
+                      setTasks((prev: Task[]) =>
+                        prev.map((x: Task) => (x.id === t.id ? { ...x, notes: val } : x))
                       )
                     }
                     onToggleExpanded={() => toggleExpanded(t.id)}
@@ -1029,7 +1029,7 @@ function TodoRow({
                   row?.focus();
                 });
               }}
-              nextFocusQuery={`[data-due-btn="${t.id}"]`}
+              nextFocusQuery={`.data-due-btn-${t.id}`}
             />
           </div>
 
