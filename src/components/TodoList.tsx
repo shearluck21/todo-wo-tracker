@@ -25,11 +25,26 @@ type Task = {
   // Stable due fields
   dueKey?: string | null;   // "today" | "tomorrow" | "next-mon" | "wd-YYYY-MM-DD"
   dueISO?: string | null;   // local "YYYY-MM-DD"
+  // Staged (pending) due change while editing; commit on unpin
+  pendingDueKey?: string | null;
+  pendingDueISO?: string | null;
   // Legacy (for migration)
   dueLabel?: string;
   notes: string;
   expanded: boolean;
 };
+
+// Priority ordering helper: High, Medium, Low
+const priorityRank: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
+function sortByPriorityStable(items: Task[], indexMap: Map<string, number>) {
+  // Stable sort: by priority rank, then by original render/index order
+  return [...items].sort((a, b) => {
+    const pa = priorityRank[a.priority] ?? 99;
+    const pb = priorityRank[b.priority] ?? 99;
+    if (pa !== pb) return pa - pb;
+    return (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0);
+  });
+}
 
 // === Due date helpers ===
 function startOfDay(d: Date) {
@@ -73,6 +88,18 @@ function computeGroupLabelForISO(iso: string | null | undefined, now = new Date(
   if (iso === nmISO) return "Next Monday";
   const dt = new Date(iso + "T00:00:00");
   return weekdayName(dt);
+}
+
+function computeKeyForISO(iso: string | null | undefined, now = new Date()) {
+  if (!iso) return "today"; // safe default
+  const today = startOfDay(now);
+  const todayISO = toISODate(today);
+  const tomorrowISO = toISODate(addDays(today, 1));
+  const nextMonISO = toISODate(nextMondayFrom(today));
+  if (iso === todayISO) return "today";
+  if (iso === tomorrowISO) return "tomorrow";
+  if (iso === nextMonISO) return "next-mon";
+  return `wd-${iso}`;
 }
 function deriveDueFromKey(key: string, now = new Date()) {
   const today = startOfDay(now);
@@ -161,7 +188,7 @@ export default function TodoList() {
   });
 
   const [text, setText] = useState("");
-  const [priority, setPriority] = useState<Priority>("medium");
+  const [priority, setPriority] = useState<Priority>("high");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const dueOptions = buildDueOptions();
@@ -170,7 +197,23 @@ export default function TodoList() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // Keep a newly-created task at the top of its group while editing
+  const [pinnedNewId, setPinnedNewId] = useState<string | null>(null);
   const didInitFocus = useRef(false);
+  const [, forceTick] = useState(0);
+
+  // Delete tasks that were completed on or before yesterday (i.e., any done task with a due date before today)
+  function cleanupDoneBeforeToday() {
+    const todayIso = toISODate(startOfDay(new Date()));
+    setTasks((prev) =>
+      prev.filter((t) => {
+        if (!t.done) return true;
+        if (!t.dueISO) return true; // don't auto-delete undated items
+        return t.dueISO >= todayIso; // keep today/future; drop past
+      })
+    );
+    save("lastCleanupISO", todayIso);
+  }
 
   // live refs for hotkeys
   const tasksRef = useRef(tasks);
@@ -204,7 +247,7 @@ export default function TodoList() {
   }
   function resetForm() {
     setText("");
-    setPriority("medium");
+    setPriority("high");
     setNotes("");
     setDueChoice(buildDueOptions()[0].key);
     setError(null);
@@ -222,10 +265,13 @@ export default function TodoList() {
   // Add a blank task inline
   function addInlineTask(focusAfter = false) {
     const todayOpt = buildDueOptions()[0];
-    const t = makeTask("New task", "medium", "", todayOpt.label);
+    const t = makeTask("New task", "high", "", todayOpt.label);
     // set stable fields
     t.dueKey = todayOpt.key;
     t.dueISO = todayOpt.iso;
+    t.pendingDueKey = null;
+    t.pendingDueISO = null;
+    setPinnedNewId(t.id);
 
     setTasks((prev) => [t, ...prev]);
     setEditingId(t.id);
@@ -319,9 +365,12 @@ export default function TodoList() {
       e.preventDefault();
       e.stopPropagation?.();
       const todayOpt = buildDueOptions()[0];
-      const t = makeTask('New task', 'medium', '', todayOpt.label);
+      const t = makeTask('New task', 'high', '', todayOpt.label);
       t.dueKey = todayOpt.key;
       t.dueISO = todayOpt.iso;
+      t.pendingDueKey = null;
+      t.pendingDueISO = null;
+      setPinnedNewId(t.id);
       setTasks((prev) => [t, ...prev]);
       setEditingId(t.id);
       requestAnimationFrame(() => {
@@ -407,6 +456,27 @@ export default function TodoList() {
     save("tasks", tasks);
   }, [tasks]);
 
+  // On mount, if we haven't cleaned up for today yet, do it once
+  useEffect(() => {
+    const todayIso = toISODate(startOfDay(new Date()));
+    const last = load<string>("lastCleanupISO", null as any);
+    if (last !== todayIso) {
+      cleanupDoneBeforeToday();
+    }
+  }, []);
+
+  useEffect(() => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 50); // a hair after midnight
+    const ms = next.getTime() - now.getTime();
+    const t = setTimeout(() => {
+      cleanupDoneBeforeToday(); // purge yesterday's completed tasks
+      forceTick((x) => x + 1);  // trigger a re-render for pill/group updates
+    }, ms);
+    return () => clearTimeout(t);
+  }, []);
+
   // On initial load, force-select the first rendered task
   useEffect(() => {
     if (didInitFocus.current) return;
@@ -437,6 +507,36 @@ export default function TodoList() {
       row?.scrollIntoView({ block: 'nearest' });
     });
   }, [tasks]);
+
+
+  // Listen for unpin requests from row blur
+  useEffect(() => {
+    const onUnpin = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (pinnedNewId !== id) return;
+      // If there is a staged due change, commit it now
+      setTasks((prev) => {
+        const opts = buildDueOptions();
+        return prev.map((x) => {
+          if (x.id !== id) return x;
+          const isoToUse = x.pendingDueISO ?? x.dueISO ?? null;
+          const keyToUse = computeKeyForISO(isoToUse);
+          const opt = opts.find((o) => o.key === keyToUse) || opts[0];
+          return {
+            ...x,
+            dueISO: isoToUse,
+            dueKey: keyToUse,
+            dueLabel: opt.label,
+            pendingDueISO: null,
+            pendingDueKey: null,
+          };
+        });
+      });
+      setPinnedNewId(null);
+    };
+    document.addEventListener("todo:unpin-if", onUnpin as EventListener);
+    return () => document.removeEventListener("todo:unpin-if", onUnpin as EventListener);
+  }, [pinnedNewId, setTasks]);
 
   return (
     <div
@@ -480,51 +580,88 @@ export default function TodoList() {
             </div>
 
             <ul className="mt-3 space-y-3">
-              {by[label].map((t) => (
-                <TodoRow
-                  key={t.id}
-                  t={t}
-                  editingId={editingId}
-                  focusedId={focusedId}
-                  setFocusedId={setFocusedId}
-                  onSetEditingId={setEditingId}
-                  onToggleDone={() => toggleDone(t.id)}
-                  onChangeText={(val) =>
-                    setTasks((prev) =>
-                      prev.map((x) => (x.id === t.id ? { ...x, text: val } : x))
-                    )
+              {(() => {
+                const items = by[label];
+                // Build a stable index map once from the overall tasks array to preserve original order ties
+                const indexMap = new Map<string, number>();
+                tasks.forEach((t, i) => indexMap.set(t.id, i));
+
+                let ordered: Task[];
+                if (label === "Today") {
+                  const undone = items.filter((x) => !x.done);
+                  const done   = items.filter((x) => x.done);
+                  const sortedUndone = sortByPriorityStable(undone, indexMap);
+                  const sortedDone   = sortByPriorityStable(done, indexMap);
+                  ordered = [...sortedUndone, ...sortedDone];
+                } else {
+                  ordered = sortByPriorityStable(items, indexMap);
+                }
+
+                // If a newly-created item is pinned and belongs to this label, show it first (ignoring sort)
+                let finalOrdered = ordered;
+                if (pinnedNewId) {
+                  const hasPinnedHere = items.some(x => x.id === pinnedNewId);
+                  if (hasPinnedHere) {
+                    const pinned = items.find(x => x.id === pinnedNewId)!;
+                    finalOrdered = [pinned, ...ordered.filter(x => x.id !== pinnedNewId)];
                   }
-                  onCyclePriority={() =>
-                    setTasks((prev) =>
-                      prev.map((x) =>
-                        x.id === t.id ? { ...x, priority: nextPriority(x.priority) } : x
+                }
+                return finalOrdered.map((t) => (
+                  <TodoRow
+                    key={t.id}
+                    t={t}
+                    editingId={editingId}
+                    focusedId={focusedId}
+                    setFocusedId={setFocusedId}
+                    onSetEditingId={setEditingId}
+                    onToggleDone={() => toggleDone(t.id)}
+                    onChangeText={(val) =>
+                      setTasks((prev) =>
+                        prev.map((x) => (x.id === t.id ? { ...x, text: val } : x))
                       )
-                    )
-                  }
-                  onSetPriority={(p) =>
-                    setTasks((prev) =>
-                      prev.map((x) => (x.id === t.id ? { ...x, priority: p } : x))
-                    )
-                  }
-                  onChangeDue={(key) => {
-                    const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
-                    setTasks((prev) =>
-                      prev.map((x) =>
-                        x.id === t.id
-                          ? { ...x, dueLabel: opt.label, dueKey: opt.key, dueISO: opt.iso }
-                          : x
+                    }
+                    onCyclePriority={() =>
+                      setTasks((prev) =>
+                        prev.map((x) =>
+                          x.id === t.id ? { ...x, priority: nextPriority(x.priority) } : x
+                        )
                       )
-                    );
-                  }}
-                  onChangeNotes={(val) =>
-                    setTasks((prev) =>
-                      prev.map((x) => (x.id === t.id ? { ...x, notes: val } : x))
-                    )
-                  }
-                  onToggleExpanded={() => toggleExpanded(t.id)}
-                  onRemove={() => remove(t.id)}
-                />
-              ))}
+                    }
+                    onSetPriority={(p) => {
+                      setTasks((prev) =>
+                        prev.map((x) => (x.id === t.id ? { ...x, priority: p } : x))
+                      );
+                      // Defer resorting until user finishes with this row (Notes blur or row blur)
+                      setPinnedNewId(t.id);
+                    }}
+                    onChangeDue={(key) => {
+                      const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
+                      // Stage the new due (do not change grouping yet)
+                      setTasks((prev) =>
+                        prev.map((x) =>
+                          x.id === t.id
+                            ? {
+                                ...x,
+                                dueLabel: opt.label,    // update pill text immediately
+                                pendingDueKey: opt.key, // stage only
+                                pendingDueISO: opt.iso, // stage only
+                              }
+                            : x
+                        )
+                      );
+                      // Keep it pinned until user finishes (Notes blur triggers commit)
+                      setPinnedNewId(t.id);
+                    }}
+                    onChangeNotes={(val) =>
+                      setTasks((prev) =>
+                        prev.map((x) => (x.id === t.id ? { ...x, notes: val } : x))
+                      )
+                    }
+                    onToggleExpanded={() => toggleExpanded(t.id)}
+                    onRemove={() => remove(t.id)}
+                  />
+                ));
+              })()}
             </ul>
           </DayCard>
         ));
@@ -898,8 +1035,25 @@ function TodoRow({
 
           <div className="relative inline-flex items-center">
             <InlineSelect
-              value={t.dueKey ?? (dueOpts.find((o) => o.label === (t as any).dueLabel)?.key || dueOpts[0].key)}
-              onChange={(key) => onChangeDue(key)}
+              value={t.pendingDueKey ?? t.dueKey ?? computeKeyForISO(t.dueISO)}
+              onChange={(key) => {
+                const opt = buildDueOptions().find((o) => o.key === key) || buildDueOptions()[0];
+                // Stage the new due (do not change grouping yet)
+                setTasks((prev) =>
+                  prev.map((x) =>
+                    x.id === t.id
+                      ? {
+                          ...x,
+                          dueLabel: opt.label,        // update pill text immediately
+                          pendingDueKey: opt.key,     // stage
+                          pendingDueISO: opt.iso,     // stage
+                        }
+                      : x
+                  )
+                );
+                // Keep it pinned until user finishes (Notes blur / row blur)
+                setPinnedNewId(t.id);
+              }}
               options={dueOpts.map((o) => ({ key: o.key, label: o.label }))}
               buttonClass={[
                 "rounded-md border pr-6 pl-3 py-1.5 text-[11px] font-mono leading-none",
@@ -942,6 +1096,9 @@ function TodoRow({
                 row?.focus();
               });
             }}
+            onBlurComplete={() => {
+              document.dispatchEvent(new CustomEvent("todo:unpin-if", { detail: t.id }));
+            }}
           />
         )}
       </div>
@@ -953,10 +1110,12 @@ function NotesEditor({
   value,
   onChange,
   onEscapeFocusRow,
+  onBlurComplete,
 }: {
   value: string;
   onChange: (v: string) => void;
   onEscapeFocusRow?: () => void;
+  onBlurComplete?: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosizeTextArea(ref, value);
@@ -978,6 +1137,7 @@ function NotesEditor({
             e.stopPropagation();
           }
         }}
+        onBlur={() => { onBlurComplete?.(); }}
         rows={1}
         placeholder="Add notes…"
         className="w-full resize-none overflow-hidden rounded-md border border-neutral-200/60 bg-white/60 px-3 py-2 text-[11px] font-mono leading-[1.4] placeholder:text-neutral-400 focus:border-neutral-300 focus:outline-none focus:ring-0"

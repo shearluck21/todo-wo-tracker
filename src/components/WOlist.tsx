@@ -13,6 +13,7 @@ type WONote = {
   rfqStatus: "drafted" | "sent" | "received";
   memo: string;
 };
+
 type WorkOrder = {
   id: string;
   salesOrder: string;
@@ -24,6 +25,18 @@ type WorkOrder = {
   notes: WONote[];
   created_at: string;    // ISO
 };
+
+/* ---------- Ordering helpers ---------- */
+// Treat "Done" as completed; urgency acts like priority (high → medium → low)
+const urgencyRank: Record<NonNullable<WorkOrder["urgency"]>, number> = { high: 0, medium: 1, low: 2 };
+function sortWOByUrgencyStable(items: WorkOrder[], indexMap: Map<string, number>) {
+  return [...items].sort((a, b) => {
+    const pa = urgencyRank[a.urgency || "medium"] ?? 99;
+    const pb = urgencyRank[b.urgency || "medium"] ?? 99;
+    if (pa !== pb) return pa - pb;
+    return (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0);
+  });
+}
 
 /* ---------- Local storage ---------- */
 const STORAGE_KEY = "todo-lite.workorders.v1";
@@ -109,6 +122,8 @@ export default function WOList() {
 
   // focused card selection (for arrow-key nav)
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // Keep a freshly-created WO fixed at the top while it's being edited
+  const [pinnedNewId, setPinnedNewId] = useState<string | null>(null);
   // const didInitFocus = useState(false)[0]; // placeholder to keep minimal changes
   const itemsRef = useRef(items);
   const focusedIdRef = useRef<string | null>(null);
@@ -132,17 +147,18 @@ export default function WOList() {
     const interactive = tag === 'input' || tag === 'textarea' || tag === 'select' || (t as any)?.isContentEditable;
     if (interactive || e.metaKey || e.ctrlKey || e.altKey) return;
 
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    // Quick add: 'n' creates a new work order and focuses Sales Order field
+    if (e.key === 'n' || e.key === 'N') {
       e.preventDefault();
-      const items = itemsRef.current;
-      if (!items.length) return;
-      const ids = items.map(w => w.id);
-      const cur = (focusedIdRef.current && ids.includes(focusedIdRef.current)) ? focusedIdRef.current : ids[0];
-      const i = ids.indexOf(cur!);
-      const nextIndex = e.key === 'ArrowDown' ? Math.min(i + 1, ids.length - 1) : Math.max(i - 1, 0);
-      const nextId = ids[nextIndex];
-      setFocusedId(nextId);
-      focusRow(nextId);
+      const id = addWO();
+      setFocusedId(id);
+      requestAnimationFrame(() => {
+        const row = document.querySelector<HTMLElement>(`[data-wo-row="${id}"]`);
+        const input = row?.querySelector<HTMLInputElement>('input[placeholder="Sales Order #"]');
+        if (input) { input.focus(); input.select?.(); }
+        else if (row) { row.focus(); }
+      });
+      return;
     }
   };
 
@@ -168,6 +184,8 @@ export default function WOList() {
 
   const addWO = () => {
     const id = crypto.randomUUID();
+    setPinnedNewId(id);
+    setFocusedId(id);
     setItems(prev => [{
       id,
       salesOrder: "",
@@ -179,6 +197,7 @@ export default function WOList() {
       notes: [],
       created_at: new Date().toISOString(),
     }, ...prev]);
+    return id;
   };
   const updateWO = (id: string, patch: Partial<WorkOrder>) => {
     const nextPatch = { ...patch } as Partial<WorkOrder>;
@@ -242,231 +261,262 @@ export default function WOList() {
           <div className="p-4 text-[11px] font-mono text-neutral-500">No work orders yet.</div>
         ) : (
           <ul className="space-y-3">
-            {items.map(w => {
-              // const dueWarn = isDueWithin5to9Weeks(w.due_on);
-              return (
-                <li key={w.id}>
-                  <TodoCard
-                    data-wo-row={w.id}
-                    tabIndex={0}
-                    onFocus={() => setFocusedId(w.id)}
-                    onKeyDown={(e) => {
-                      if (e.currentTarget !== e.target) return; // ignore if in a field
+            {(() => {
+              const list = items;
+              // Build stable index map (original order) for tie-breaking
+              const indexMap = new Map<string, number>();
+              list.forEach((w, i) => indexMap.set(w.id, i));
 
-                      // Enter: focus Sales Order field
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        const input = e.currentTarget.querySelector<HTMLInputElement>('input[placeholder="Sales Order #"]');
-                        if (input) { input.focus(); input.select?.(); }
-                        return;
-                      }
+              const undone = list.filter((w) => w.status !== "Done");
+              const done   = list.filter((w) => w.status === "Done");
 
-                      // Tab from focused card: also focus Sales Order first
-                      if (e.key === "Tab") {
-                        e.preventDefault();
-                        const input = e.currentTarget.querySelector<HTMLInputElement>('input[placeholder="Sales Order #"]');
-                        if (input) { input.focus(); input.select?.(); }
-                        return;
-                      }
-                    }}
-                    className={[
-                      "outline-none",
-                      focusedId === w.id
-                        ? "ring-2 ring-neutral-400/40"
-                        : "ring-1 ring-neutral-200/50",
-                    ].join(" ")}
-                  >
-                    {/* title row: Sales Order with inline delete */}
-                    <div className="mb-2 flex items-center gap-2">
-                      <input
-                        placeholder="Sales Order #"
-                        value={w.salesOrder}
-                        onFocus={() => setFocusedId(w.id)}
-                        onChange={(e) => updateWO(w.id, { salesOrder: e.target.value })}
-                        className={[
-                          "flex-1 rounded-lg border border-neutral-200/70 bg-white/80",
-                          "px-2 py-1 outline-none font-sans text-[15px] font-semibold",
-                          "backdrop-blur supports-[backdrop-filter]:backdrop-blur-sm",
-                          "focus:border-neutral-300"
-                        ].join(" ")}
-                      />
-                      <button
-                        className="h-7 w-7 rounded-md border border-neutral-200/70 bg-white/80 leading-none"
-                        aria-label="Delete work order"
-                        onClick={() => removeWO(w.id)}
-                        title="Delete work order"
-                      >
-                        ×
-                      </button>
-                    </div>
+              const sortedUndone = sortWOByUrgencyStable(undone, indexMap);
+              let ordered: WorkOrder[];
+              if (pinnedNewId) {
+                const pinned = undone.find(w => w.id === pinnedNewId);
+                if (pinned) {
+                  const restUndone = sortedUndone.filter(w => w.id !== pinnedNewId);
+                  ordered = [pinned, ...restUndone, ...done];
+                } else {
+                  ordered = [...sortedUndone, ...done];
+                }
+              } else {
+                ordered = [...sortedUndone, ...done];
+              }
 
-                    {/* secondary fields row */}
-                    <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
-                      <InlineInput
-                        placeholder="Work Order #"
-                        value={w.workOrder}
-                        onFocus={() => setFocusedId(w.id)}
-                        onChange={(e) => updateWO(w.id, { workOrder: e.target.value })}
-                      />
-                      <InlineInput
-                        placeholder="Customer"
-                        value={w.customer}
-                        onFocus={() => setFocusedId(w.id)}
-                        onChange={(e) => updateWO(w.id, { customer: e.target.value })}
-                      />
-                      <InlineSelect
-                        value={w.status}
-                        options={[
-                          { key: "Not Started", label: "Not Started", className: "text-neutral-800" },
-                          { key: "In Progress", label: "In Progress", className: "text-blue-800" },
-                          { key: "Done",        label: "Done",        className: "text-green-800" },
-                        ]}
-                        onChange={(v) => updateWO(w.id, { status: v as WOStatus })}
-                        onFocus={() => setFocusedId(w.id)}
-                        buttonClass={[
-                          "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
-                          "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
-                          "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
-                          w.status === "Done"
-                            ? "border-green-200 bg-green-50/70 text-green-800"
-                            : w.status === "In Progress"
-                            ? "border-blue-200 bg-blue-50/70 text-blue-800"
-                            : "border-neutral-200 bg-white/70 text-neutral-800",
-                          `wo-status-btn-${w.id}`,
-                        ].join(" ")}
-                        nextFocusQuery={`.wo-urgency-btn-${w.id}`}
-                        onEscapeFocusRow={() => {
-                          requestAnimationFrame(() => {
-                            const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
-                            row?.focus();
-                          });
-                        }}
-                      />
-                      <InlineSelect
-                        value={w.urgency || "medium"}
-                        options={[
-                          { key: "low",    label: "low",    className: "text-neutral-800" },
-                          { key: "medium", label: "medium", className: "text-amber-800" },
-                          { key: "high",   label: "high",   className: "text-red-800" },
-                        ]}
-                        onChange={(v) => updateWO(w.id, { urgency: v as any })}
-                        onFocus={() => setFocusedId(w.id)}
-                        buttonClass={[
-                          "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
-                          "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
-                          "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
-                          (w.urgency || "medium") === "high"
-                            ? "border-red-200 bg-red-50/70 text-red-800"
-                            : (w.urgency || "medium") === "medium"
-                            ? "border-amber-200 bg-amber-50/70 text-amber-800"
-                            : "border-neutral-200 bg-white/70 text-neutral-800",
-                          `wo-urgency-btn-${w.id}`,
-                        ].join(" ")}
-                        nextFocusQuery={`input.wo-due-${w.id}`}
-                        onEscapeFocusRow={() => {
-                          requestAnimationFrame(() => {
-                            const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
-                            row?.focus();
-                          });
-                        }}
-                      />
-                      <InlineInput
-                        placeholder="MM/DD/YY"
-                        value={fmtShortDate(w.due_on)}
-                        onFocus={() => setFocusedId(w.id)}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const norm = toISOIfPossible(raw);
-                          // update immediately; urgency will recompute in updateWO
-                          updateWO(w.id, { due_on: norm.iso ?? (raw.trim() ? raw : undefined) });
-                        }}
-                        onBlur={(e) => {
-                          // On blur, snap to canonical YYYY-MM-DD if we can parse it
-                          const raw = e.target.value;
-                          const norm = toISOIfPossible(raw);
-                          if (norm.valid && norm.iso && norm.iso !== w.due_on) {
-                            updateWO(w.id, { due_on: norm.iso });
-                          }
-                        }}
-                        className={`border border-neutral-200/70 bg-white/80 focus:border-neutral-300 wo-due-${w.id}`}
-                      />
-                    </div>
+              return ordered.map(w => {
+                // const dueWarn = isDueWithin5to9Weeks(w.due_on);
+                return (
+                  <li key={w.id}>
+                    <TodoCard
+                      data-wo-row={w.id}
+                      tabIndex={0}
+                      onFocus={() => setFocusedId(w.id)}
+                      onBlur={(e) => {
+                        const next = e.relatedTarget as Node | null;
+                        if (!e.currentTarget.contains(next)) {
+                          if (pinnedNewId === w.id) setPinnedNewId(null);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.currentTarget !== e.target) return; // ignore if in a field
 
-                    {/* line notes */}
-                    <div className="mt-3">
-                      <div className="mb-1 flex items-center justify-between">
-                        <div className="text-[11px] font-mono text-neutral-500">Line Notes</div>
-                        <GlassButton size="sm" tone="neutral" onClick={() => addLine(w.id)}>+ Add Line</GlassButton>
+                        // Enter: focus Sales Order field
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const input = e.currentTarget.querySelector<HTMLInputElement>('input[placeholder="Sales Order #"]');
+                          if (input) { input.focus(); input.select?.(); }
+                          return;
+                        }
+
+                        // Tab from focused card: also focus Sales Order first
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          const input = e.currentTarget.querySelector<HTMLInputElement>('input[placeholder="Sales Order #"]');
+                          if (input) { input.focus(); input.select?.(); }
+                          return;
+                        }
+                      }}
+                      className={[
+                        "outline-none",
+                        focusedId === w.id
+                          ? "ring-2 ring-neutral-400/40"
+                          : "ring-1 ring-neutral-200/50",
+                      ].join(" ")}
+                    >
+                      {/* title row: Sales Order with inline delete */}
+                      <div className="mb-2 flex items-center gap-2">
+                        <input
+                          placeholder="Sales Order #"
+                          value={w.salesOrder}
+                          onFocus={() => setFocusedId(w.id)}
+                          onChange={(e) => updateWO(w.id, { salesOrder: e.target.value })}
+                          className={[
+                            "flex-1 rounded-lg border border-neutral-200/70 bg-white/80",
+                            "px-2 py-1 outline-none font-sans text-[15px] font-semibold",
+                            "backdrop-blur supports-[backdrop-filter]:backdrop-blur-sm",
+                            "focus:border-neutral-300"
+                          ].join(" ")}
+                        />
+                        <button
+                          className="h-7 w-7 rounded-md border border-neutral-200/70 bg-white/80 leading-none"
+                          aria-label="Delete work order"
+                          onClick={() => removeWO(w.id)}
+                          title="Delete work order"
+                        >
+                          ×
+                        </button>
                       </div>
 
-                      <div className="space-y-2">
-                        {w.notes.map(n => (
-                          <div
-                            key={n.id}
-                            className="grid grid-cols-2 sm:grid-cols-[1.2fr_auto_3fr_auto] gap-2 items-center rounded-md border border-neutral-200/60 bg-white/70 px-2 py-2"
-                          >
-                            <InlineInput
-                              placeholder="Part #"
-                              value={n.partNumber}
-                              onFocus={() => setFocusedId(w.id)}
-                              onChange={(e) => updateLine(w.id, n.id, { partNumber: e.target.value })}
-                            />
+                      {/* secondary fields row */}
+                      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                        <InlineInput
+                          placeholder="Work Order #"
+                          value={w.workOrder}
+                          onFocus={() => setFocusedId(w.id)}
+                          onChange={(e) => updateWO(w.id, { workOrder: e.target.value })}
+                        />
+                        <InlineInput
+                          placeholder="Customer"
+                          value={w.customer}
+                          onFocus={() => setFocusedId(w.id)}
+                          onChange={(e) => updateWO(w.id, { customer: e.target.value })}
+                        />
+                        <InlineSelect
+                          value={w.status}
+                          options={[
+                            { key: "Not Started", label: "Not Started", className: "text-neutral-800" },
+                            { key: "In Progress", label: "In Progress", className: "text-blue-800" },
+                            { key: "Done",        label: "Done",        className: "text-green-800" },
+                          ]}
+                          onChange={(v) => {
+                            updateWO(w.id, { status: v as WOStatus });
+                            if (pinnedNewId === w.id) setPinnedNewId(null);
+                          }}
+                          onFocus={() => setFocusedId(w.id)}
+                          buttonClass={[
+                            "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
+                            "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
+                            "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
+                            w.status === "Done"
+                              ? "border-green-200 bg-green-50/70 text-green-800"
+                              : w.status === "In Progress"
+                              ? "border-blue-200 bg-blue-50/70 text-blue-800"
+                              : "border-neutral-200 bg-white/70 text-neutral-800",
+                            `wo-status-btn-${w.id}`,
+                          ].join(" ")}
+                          nextFocusQuery={`.wo-urgency-btn-${w.id}`}
+                          onEscapeFocusRow={() => {
+                            requestAnimationFrame(() => {
+                              const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
+                              row?.focus();
+                            });
+                          }}
+                        />
+                        <InlineSelect
+                          value={w.urgency || "medium"}
+                          options={[
+                            { key: "low",    label: "low",    className: "text-neutral-800" },
+                            { key: "medium", label: "medium", className: "text-amber-800" },
+                            { key: "high",   label: "high",   className: "text-red-800" },
+                          ]}
+                          onChange={(v) => updateWO(w.id, { urgency: v as any })}
+                          onFocus={() => setFocusedId(w.id)}
+                          buttonClass={[
+                            "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
+                            "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
+                            "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
+                            (w.urgency || "medium") === "high"
+                              ? "border-red-200 bg-red-50/70 text-red-800"
+                              : (w.urgency || "medium") === "medium"
+                              ? "border-amber-200 bg-amber-50/70 text-amber-800"
+                              : "border-neutral-200 bg-white/70 text-neutral-800",
+                            `wo-urgency-btn-${w.id}`,
+                          ].join(" ")}
+                          nextFocusQuery={`input.wo-due-${w.id}`}
+                          onEscapeFocusRow={() => {
+                            requestAnimationFrame(() => {
+                              const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
+                              row?.focus();
+                            });
+                          }}
+                        />
+                        <InlineInput
+                          placeholder="MM/DD/YY"
+                          value={fmtShortDate(w.due_on)}
+                          onFocus={() => setFocusedId(w.id)}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const norm = toISOIfPossible(raw);
+                            updateWO(w.id, { due_on: norm.iso ?? (raw.trim() ? raw : undefined) });
+                          }}
+                          onBlur={(e) => {
+                            const raw = e.target.value;
+                            const norm = toISOIfPossible(raw);
+                            if (norm.valid && norm.iso && norm.iso !== w.due_on) {
+                              updateWO(w.id, { due_on: norm.iso });
+                            }
+                          }}
+                          className={`border border-neutral-200/70 bg-white/80 focus:border-neutral-300 wo-due-${w.id}`}
+                        />
+                      </div>
 
-                            <InlineSelect
-                              value={n.rfqStatus}
-                              options={[
-                                { key: "drafted",  label: "drafted",  className: "text-amber-800" },
-                                { key: "sent",     label: "sent",     className: "text-blue-800" },
-                                { key: "received", label: "received", className: "text-green-800" },
-                              ]}
-                              onChange={(v) => updateLine(w.id, n.id, { rfqStatus: v as WONote["rfqStatus"] })}
-                              onFocus={() => setFocusedId(w.id)}
-                              buttonClass={[
-                                "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
-                                "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
-                                "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
-                                n.rfqStatus === "received"
-                                  ? "border-green-200 bg-green-50/70 text-green-800"
-                                  : n.rfqStatus === "sent"
-                                  ? "border-blue-200 bg-blue-50/70 text-blue-800"
-                                  : "border-amber-200 bg-amber-50/70 text-amber-800",
-                                `wo-rfq-btn-${n.id}`,
-                              ].join(" ")}
-                              nextFocusQuery={`input.wo-memo-${n.id}`}
-                              onEscapeFocusRow={() => {
-                                requestAnimationFrame(() => {
-                                  const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
-                                  row?.focus();
-                                });
-                              }}
-                            />
+                      {/* line notes */}
+                      <div className="mt-3">
+                        <div className="mb-1 flex items-center justify-between">
+                          <div className="text-[11px] font-mono text-neutral-500">Line Notes</div>
+                          <GlassButton size="sm" tone="neutral" onClick={() => addLine(w.id)}>+ Add Line</GlassButton>
+                        </div>
 
-                            <InlineInput
-                              placeholder="Memo…"
-                              value={n.memo}
-                              onFocus={() => setFocusedId(w.id)}
-                              onChange={(e) => updateLine(w.id, n.id, { memo: e.target.value })}
-                              className={`wo-memo-${n.id}`}
-                            />
-
-                            <button
-                              className="h-7 w-7 rounded-md border border-neutral-200/70 bg-white/80 leading-none"
-                              aria-label="Delete line"
-                              onClick={() => removeLine(w.id, n.id)}
+                        <div className="space-y-2">
+                          {w.notes.map(n => (
+                            <div
+                              key={n.id}
+                              className="grid grid-cols-2 sm:grid-cols-[1.2fr_auto_3fr_auto] gap-2 items-center rounded-md border border-neutral-200/60 bg-white/70 px-2 py-2"
                             >
-                              ×
-                            </button>
-                          </div>
-                        ))}
-                        {w.notes.length === 0 && (
-                          <div className="text-[11px] font-mono text-neutral-400">No lines yet.</div>
-                        )}
+                              <InlineInput
+                                placeholder="Part #"
+                                value={n.partNumber}
+                                onFocus={() => setFocusedId(w.id)}
+                                onChange={(e) => updateLine(w.id, n.id, { partNumber: e.target.value })}
+                              />
+
+                              <InlineSelect
+                                value={n.rfqStatus}
+                                options={[
+                                  { key: "drafted",  label: "drafted",  className: "text-amber-800" },
+                                  { key: "sent",     label: "sent",     className: "text-blue-800" },
+                                  { key: "received", label: "received", className: "text-green-800" },
+                                ]}
+                                onChange={(v) => updateLine(w.id, n.id, { rfqStatus: v as WONote["rfqStatus"] })}
+                                onFocus={() => setFocusedId(w.id)}
+                                buttonClass={[
+                                  "rounded-md border px-3 py-1.5 pr-6 text-[11px] font-mono leading-none",
+                                  "backdrop-blur-md supports-[backdrop-filter]:backdrop-blur-md",
+                                  "shadow-xs ring-1 ring-black/5 focus:outline-none focus:border-neutral-300",
+                                  n.rfqStatus === "received"
+                                    ? "border-green-200 bg-green-50/70 text-green-800"
+                                    : n.rfqStatus === "sent"
+                                    ? "border-blue-200 bg-blue-50/70 text-blue-800"
+                                    : "border-amber-200 bg-amber-50/70 text-amber-800",
+                                  `wo-rfq-btn-${n.id}`,
+                                ].join(" ")}
+                                nextFocusQuery={`input.wo-memo-${n.id}`}
+                                onEscapeFocusRow={() => {
+                                  requestAnimationFrame(() => {
+                                    const row = document.querySelector<HTMLElement>(`[data-wo-row="${w.id}"]`);
+                                    row?.focus();
+                                  });
+                                }}
+                              />
+
+                              <InlineInput
+                                placeholder="Memo…"
+                                value={n.memo}
+                                onFocus={() => setFocusedId(w.id)}
+                                onChange={(e) => updateLine(w.id, n.id, { memo: e.target.value })}
+                                className={`wo-memo-${n.id}`}
+                              />
+
+                              <button
+                                className="h-7 w-7 rounded-md border border-neutral-200/70 bg-white/80 leading-none"
+                                aria-label="Delete line"
+                                onClick={() => removeLine(w.id, n.id)}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                          {w.notes.length === 0 && (
+                            <div className="text-[11px] font-mono text-neutral-400">No lines yet.</div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </TodoCard>
-                </li>
-              );
-            })}
+                    </TodoCard>
+                  </li>
+                );
+              });
+            })()}
           </ul>
         )}
       </DayCard>
