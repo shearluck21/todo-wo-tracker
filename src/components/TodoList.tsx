@@ -436,7 +436,6 @@ export default function TodoList() {
                   onRowComplete={() => endRowEditing(null)}
                   onToggleDone={() => toggleDone(t.id)}
                   onRemove={() => remove(t.id)}
-                  onCyclePriority={() => cyclePriority(t.id)}
                   onSetPriority={(p) => setPriorityFor(t.id, p)}
                   onChangeText={(val) =>
                     setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, text: val } : x)))
@@ -460,7 +459,6 @@ function TodoRow({
   onRowComplete,
   onToggleDone,
   onRemove,
-  onCyclePriority,
   onSetPriority,
   onChangeText,
   onChangeDue,
@@ -471,7 +469,6 @@ function TodoRow({
   onRowComplete: () => void;
   onToggleDone: () => void;
   onRemove: () => void;
-  onCyclePriority: () => void;
   onSetPriority: (p: Priority) => void;
   onChangeText: (v: string) => void;
   onChangeDue: (key: string) => void;
@@ -524,8 +521,9 @@ function TodoRow({
 
         {/* Row 2: priority + due + actions */}
         <div className="pl-7 flex items-center gap-2 text-[11px]">
-          <button
-            onClick={onCyclePriority}
+          <select
+            value={t.priority}
+            onChange={(e) => onSetPriority(e.target.value as Priority)}
             className={`rounded-md border px-2 py-1 text-[11px] font-mono ${
               t.priority === "high"
                 ? "border-red-200 bg-red-50/70 text-red-800"
@@ -533,10 +531,13 @@ function TodoRow({
                 ? "border-amber-200 bg-amber-50/70 text-amber-800"
                 : "border-neutral-200 bg-white/70 text-neutral-800"
             }`}
-            title="Cycle priority (high → medium → low)"
+            aria-label="Priority"
+            title="Set priority"
           >
-            {t.priority}
-          </button>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
 
           {/* Due "pill" (simple select; label string will always carry the date) */}
           <select
